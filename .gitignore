@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# evaluation.py's own output directory (5 GA seeds, a quick check run).
+# The reported 20-replication run lives in evaluation_results_n20/ and is
+# tracked.
+evaluation_results/

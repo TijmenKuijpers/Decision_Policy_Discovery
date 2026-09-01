@@ -1,0 +1,81 @@
+{
+  "batching": {
+    "category": "Cat I",
+    "process": "Transportation, simultaneous execution",
+    "normative_policy": "pi_batch",
+    "normative_policy_listing": "IF COUNT(ready, ALL) > 3 OR MAX(truck, status, ALL) = 1\n    THEN FIRE(transporting)\nELSE POSTPONE",
+    "n_rollouts": 18,
+    "rollouts_with_decisions": 18,
+    "horizon": 60,
+    "trace_seed_base": 1000,
+    "decision_points": 491,
+    "action_transitions": [
+      "transporting"
+    ],
+    "action_distribution": {
+      "postpone": 162,
+      "transporting": 329
+    },
+    "file": "batching_state_action.jsonl"
+  },
+  "choice_sl": {
+    "category": "Cat II-a",
+    "process": "Assembly, time-based SLA",
+    "normative_policy": "pi_sla",
+    "normative_policy_listing": "IF COUNT(phone_delivered, ALL) > 0 AND SUM(phone_delivered, on_time, ALL) /\n      COUNT(phone_delivered, ALL) < 0.95\n    THEN FIRE(phone_production)\nELSE IF COUNT(game_delivered, ALL) > 0 AND SUM(game_delivered, on_time, ALL) /\n           COUNT(game_delivered, ALL) < 0.95\n    THEN FIRE(game_production)\nELSE IF COUNT(game_demand, ALL) > 0\n    THEN FIRE(game_production)\nELSE FIRE(phone_production)",
+    "n_rollouts": 7,
+    "rollouts_with_decisions": 7,
+    "horizon": 60,
+    "trace_seed_base": 4000,
+    "decision_points": 484,
+    "action_transitions": [
+      "game_production",
+      "phone_production"
+    ],
+    "action_distribution": {
+      "game_production": 214,
+      "phone_production": 270
+    },
+    "file": "choice_sl_state_action.jsonl"
+  },
+  "ratelimit": {
+    "category": "Cat II-b",
+    "process": "Dual manufacturing, number of executions",
+    "normative_policy": "pi_rate",
+    "normative_policy_listing": "IF SUM(machine, nr_exec_a, ALL) / CLOCK < 0.4\n    THEN FIRE(process_a)\nELSE IF SUM(machine, nr_exec_b, ALL) / CLOCK < 0.25\n    THEN FIRE(process_b)\nELSE POSTPONE",
+    "n_rollouts": 8,
+    "rollouts_with_decisions": 8,
+    "horizon": 60,
+    "trace_seed_base": 2000,
+    "decision_points": 486,
+    "action_transitions": [
+      "process_a",
+      "process_b"
+    ],
+    "action_distribution": {
+      "process_a": 200,
+      "process_b": 134,
+      "postpone": 152
+    },
+    "file": "ratelimit_state_action.jsonl"
+  },
+  "priority": {
+    "category": "Cat II-c",
+    "process": "Manufacturing, priority on data",
+    "normative_policy": "pi_prio",
+    "normative_policy_listing": "IF MAX(waiting_1, priority, ALL) <= MAX(waiting_2, priority, ALL)\n    THEN FIRE(process)\nELSE POSTPONE",
+    "n_rollouts": 6,
+    "rollouts_with_decisions": 6,
+    "horizon": 60,
+    "trace_seed_base": 3000,
+    "decision_points": 489,
+    "action_transitions": [
+      "process"
+    ],
+    "action_distribution": {
+      "postpone": 340,
+      "process": 149
+    },
+    "file": "priority_state_action.jsonl"
+  }
+}

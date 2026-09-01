@@ -1,0 +1,41 @@
+cff-version: 1.2.0
+title: >-
+  Decision Policy Discovery in Process Models with Symbolic
+  Regression -- code and data
+message: >-
+  If you use this software or the accompanying datasets,
+  please cite the paper below.
+type: software
+license: MIT
+authors:
+  - given-names: Tijmen
+    family-names: Kuijpers
+    email: t.p.kuijpers@tue.nl
+    orcid: 'https://orcid.org/0009-0007-3086-1070'
+    affiliation: Eindhoven University of Technology
+  - given-names: Karolin
+    family-names: Winter
+    orcid: 'https://orcid.org/0009-0003-8030-2964'
+    affiliation: Eindhoven University of Technology
+  - given-names: Remco
+    family-names: Dijkman
+    orcid: 'https://orcid.org/0000-0003-4083-0036'
+    affiliation: Eindhoven University of Technology
+repository-code: 'https://github.com/TijmenKuijpers/Decision_Policy_Discovery'
+preferred-citation:
+  type: article
+  title: >-
+    Decision Policy Discovery in Process Models with Symbolic
+    Regression
+  authors:
+    - given-names: Tijmen
+      family-names: Kuijpers
+      orcid: 'https://orcid.org/0009-0007-3086-1070'
+    - given-names: Karolin
+      family-names: Winter
+      orcid: 'https://orcid.org/0009-0003-8030-2964'
+    - given-names: Remco
+      family-names: Dijkman
+      orcid: 'https://orcid.org/0000-0003-4083-0036'
+  journal: Information Systems
+  year: 2026

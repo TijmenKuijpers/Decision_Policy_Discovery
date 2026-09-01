@@ -1,4 +1,4 @@
-"""
+r"""
 ga_priority_conf.py
 -------------------
 Genetic-algorithm conformance search over the policy grammar for a single-line
@@ -6,16 +6,6 @@ manufacturing process governed by a *priority look-ahead* decision policy.
 
 Process
 -------
-Five places and three transitions:
-
-    arrival --[arrive]--> waiting_1 --[pre_process]--> waiting_2 --[process]--> completed
-                                                            \                /
-                                                             \--- machine --/
-
-  * arrive      (evolution) — announces a case, with a priority attribute.
-  * pre_process (evolution) — moves a case from waiting_1 to waiting_2 as soon
-                              as it becomes available.  No resource needed.
-  * process     (ACTION)    — waiting_2 + machine -> completed + machine.
 
 Both waiting places are priority queues: highest `priority` first (see
 _sort_by_priority).  That ordering is what decides *which* case `process`
@@ -29,78 +19,34 @@ Reference policy (pi_prio)
 
 "Do not start on what is ready if something better is still upstream."
 
-Why arrivals are announced ahead of time
-----------------------------------------
-gympn only consults the policy once no evolution is enabled at the current
-clock (see GymProblem.bindings, and the note in ga_batching_conf).  waiting_1
-is the input place of an evolution, so by the time any decision is taken
-pre_process has already drained every *enabled* token out of it — MAX over
-waiting_1's enabled tokens is always the empty-set value at exactly the moments
-the policy runs, and the reference condition would degenerate to "always fire".
-
-So `arrive` announces each case LEAD_TIME before it becomes available.  The
-announced cases sit in waiting_1 as future-dated tokens: visible to the ALL
-selector, not yet consumable by pre_process.  waiting_1 therefore means "known
-but not yet arrived" and waiting_2 means "ready to run", which is what makes
-the look-ahead comparison meaningful.  This also makes the ALL/ENABLED
-distinction load-bearing — under ENABLED the reference policy is degenerate.
-
-Postponing is always productive here: the clock advances, the better upstream
-case becomes available, pre_process moves it into waiting_2 and the condition
-flips to true.  (A capacity-limited pre_process would deadlock instead — with
-waiting_2 full, postponing could never let the better case through.)
-
-Empty-set note: MAX over an empty selection is -inf (see policy_grammar).  At
-any decision point waiting_2 is non-empty, since `process` could not otherwise
-bind, so MAX(waiting_2) is finite.  When waiting_1 is empty MAX is -inf and the
-condition holds — nothing upstream, so run what is ready.  Both edges behave.
-
 Seed policies (three complementary imperfect starts)
 ----------------------------------------------------
     A: right shape, wrong aggregate  (MIN instead of MAX)
     B: availability only             (ignores priority entirely)
     C: no policy at all              (always fire)
-
-Expected runtime: ~10-20 minutes for the default 60 x 50 configuration.
 """
-
-import io
-import sys
-import contextlib
 
 import numpy as np
 from sortedcontainers import SortedList
 
-sys.path.append("C:/Users/20183272/OneDrive - TU Eindhoven/Documents/GitHub/gympn")
+import gympn_path  # noqa: F401  -- makes gympn importable; see its docstring
 
 from simpn.simulator import SimToken
 from gympn.simulator import GymProblem
-from gympn.solvers import HeuristicSolver
 
 from policy_grammar import (
     IfThenElse, Compare,
-    Count, Sum, Min, Max, Mean,
-    Fire, Postpone, ENABLED,
+    Count, Min, Max,
+    Fire, Postpone,
 )
-from ga_fitness import CosmeticConfig
 import symbolic_regression as sr
+import ga_shared as shared
 
 # ─── scenario parameters ──────────────────────────────────────────────────────
 
 # Mean time between case announcements.
 ARRIVAL_SCALE    = 1.2
-
-# How far ahead a case is announced.  Must exceed ARRIVAL_SCALE for waiting_1
-# to hold more than one pending case — that is what gives MAX(waiting_1) and
-# the priority sort on waiting_1 something to range over.
-#
-# It also controls how often the reference policy fires: a longer lead means
-# more pending cases, a higher MAX(waiting_1), and so more postponing.  Swept
-# at horizon 60: lead 1.0 -> 38% fire, 2.0 -> 35%, 3.0 -> 28%, 4.0 -> 21%.
-# 2.0 keeps waiting_1 genuinely multi-token while leaving the policy a healthy
-# mix of both decisions.
 LEAD_TIME        = 2.0
-
 PROCESS_TIME     = 1.0    # machine occupied per case
 
 # Inclusive priority range carried by each case.
@@ -111,7 +57,6 @@ PRIORITY_HI      = 9
 
 PLACES      = ['arrival', 'waiting_1', 'waiting_2', 'completed', 'machine']
 TRANSITIONS = ['process']
-COMPARATORS = ['>', '>=', '<', '<=', '=', '!=']
 
 ATTR_FEATURES = [
     ('waiting_1', 'priority'),
@@ -119,33 +64,23 @@ ATTR_FEATURES = [
     ('completed', 'priority'),
 ]
 
-AGGREGATES = [Sum, Min, Max, Mean]
+# ─── GA hyper-parameters (shared -- see ga_shared) ────────────────────────────
 
-NUM_INT_POOL   = list(range(11))
-NUM_FLOAT_POOL = [0.5, 1.5, 2.5, 5.0]
+POP_SIZE      = shared.POP_SIZE
+N_GENERATIONS = shared.N_GENERATIONS
+TOURNAMENT_K  = shared.TOURNAMENT_K
+P_CROSSOVER   = shared.P_CROSSOVER
+P_MUTATION    = shared.P_MUTATION
+MAX_DEPTH     = shared.MAX_DEPTH
+ELITE_K       = shared.ELITE_K
+COMPARATORS   = shared.COMPARATORS
+# 6 x 60 yields 489 decision points.
+N_ROLLOUTS    = 6
+HORIZON       = shared.HORIZON
 
-# ─── GA hyper-parameters ──────────────────────────────────────────────────────
+COSMETIC_CONFIG = shared.COSMETIC_CONFIG
 
-POP_SIZE      = 60
-N_GENERATIONS = 50
-TOURNAMENT_K  = 3
-P_CROSSOVER   = 0.70
-P_MUTATION    = 0.35
-MAX_DEPTH     = 3
-ELITE_K       = 3
-N_ROLLOUTS    = 3
-HORIZON       = 60
-
-# Primary score is a divergence rate in [-1, 0]; scaled so the cosmetic term
-# stays a tie-breaker rather than the dominant objective.
-COSMETIC_CONFIG = CosmeticConfig(
-    enabled=True,
-    w_ite_depth=0.002,
-    w_non_numeric=0.002,
-    w_non_terminal=0.001,
-    w_expr_size=0.001,
-    max_cosmetic_penalty=0.05,
-)
+SCALE_CONFIG = shared.SCALE_CONFIG
 
 # ─── priority-queue helper ────────────────────────────────────────────────────
 
@@ -211,10 +146,11 @@ def make_priority_system(seed: int = 42) -> GymProblem:
     rng = np.random.default_rng(seed)
     pn.rng = rng
 
-    arrival   = pn.add_var("arrival",   var_attributes=["case_id"])
-    waiting_1 = pn.add_var("waiting_1", var_attributes=["case_id", "priority"])
-    waiting_2 = pn.add_var("waiting_2", var_attributes=["case_id", "priority"])
-    completed = pn.add_var("completed", var_attributes=["case_id", "priority"])
+    # Priority is the only case data in this process; cases carry no identifier.
+    arrival   = pn.add_var("arrival",   var_attributes=[])
+    waiting_1 = pn.add_var("waiting_1", var_attributes=["priority"])
+    waiting_2 = pn.add_var("waiting_2", var_attributes=["priority"])
+    completed = pn.add_var("completed", var_attributes=["priority"])
     machine   = pn.add_var("machine",   var_attributes=["machine_id"])
 
     # Both waiting places are priority queues, as required.
@@ -223,14 +159,12 @@ def make_priority_system(seed: int = 42) -> GymProblem:
 
     # ── arrive (evolution) ────────────────────────────────────────────────────
     def arrive(tok):
-        cid      = tok["case_id"] + 1
         inter    = float(rng.exponential(scale=ARRIVAL_SCALE))
         priority = int(rng.integers(PRIORITY_LO, PRIORITY_HI + 1))
-        case     = {"case_id": cid, "priority": priority}
         # The generator advances by `inter`; the case itself only becomes
         # available LEAD_TIME later, so it is visible-but-pending in waiting_1.
-        return [SimToken({"case_id": cid}, delay=inter),
-                SimToken(case, delay=inter + LEAD_TIME)]
+        return [SimToken({}, delay=inter),
+                SimToken({"priority": priority}, delay=inter + LEAD_TIME)]
 
     pn.add_event([arrival], [arrival, waiting_1], behavior=arrive, name="arrive")
 
@@ -251,7 +185,7 @@ def make_priority_system(seed: int = 42) -> GymProblem:
                   name="process")
 
     # ── initial state ─────────────────────────────────────────────────────────
-    arrival.put({"case_id": 0})
+    arrival.put({})
     machine.put({"machine_id": 1})
 
     return pn
@@ -269,18 +203,28 @@ REFERENCE_POLICY = IfThenElse(
 
 # ─── fitness ──────────────────────────────────────────────────────────────────
 
+# Scoring is target-driven: the reference is simulated once, its decision
+# points are recorded, and candidates are scored by replay.  `_select_binding`
+# is the binding picker for that recording, so the priority-queue discipline
+# shapes the recorded trajectory -- see its docstring for why sorting the
+# marking alone is not enough.
+_TRACES = sr.TraceCache(
+    make_system=lambda s: make_priority_system(seed=s),
+    seed_base=3000,
+    pick_binding=_select_binding,
+)
+
+
 def conformance_counts(tree, reference=None) -> tuple[int, int] | None:
     """Divergences and decision points vs *reference* (default REFERENCE_POLICY).
 
-    `_select_binding` is passed as the binding picker so the priority-queue
-    discipline applies during measurement -- see its docstring for why sorting
-    the marking alone is not enough.
+    The decision points are *reference*'s: recorded once from a simulation it
+    drives, then replayed for every candidate.  N_ROLLOUTS / HORIZON are read
+    here rather than baked into `_TRACES` so `evaluation.py` can override them.
     """
-    return sr.conformance_counts(
+    return _TRACES.counts(
         tree, reference if reference is not None else REFERENCE_POLICY,
-        make_system=lambda s: make_priority_system(seed=s),
-        n_rollouts=N_ROLLOUTS, horizon=HORIZON, seed_base=3000,
-        pick_binding=_select_binding,
+        n_rollouts=N_ROLLOUTS, horizon=HORIZON,
     )
 
 
@@ -293,44 +237,9 @@ evaluate = sr.make_evaluator(evaluate_primary, COSMETIC_CONFIG)
 
 # ─── expression vocabulary ────────────────────────────────────────────────────
 
-VOCAB = sr.ExprVocab(
-    places=PLACES,
-    attr_features=ATTR_FEATURES,          # priority on each queue + completed
-    aggregates=AGGREGATES,
-    int_pool=NUM_INT_POOL,
-    float_pool=NUM_FLOAT_POOL,
-    p_float=0.25,
-    w_count=0.25,                         # queue lengths
-    w_number=0.15,                        # literal threshold
-    w_aggregate=0.60,                     # the priority aggregates the reference needs
+VOCAB = shared.make_vocab(PLACES, ATTR_FEATURES)
 
-    # p_family_escape lets a Count-based tree reach the priority aggregates
-    # without discarding the comparison structure that made it good.  The
-    # reference here needs exactly that jump (COUNT -> MAX over priority), and a
-    # GA seeded with a strong count-based policy otherwise stalls on it.
-    p_family_escape=0.15,
-    p_agg_swap=0.45,
-    p_feature_swap=0.85,
-
-    int_lo=0, int_hi=10,
-    float_nudges=(-0.5, 0.5),
-    float_lo=0.0,
-    float_hi=None,                        # NOTE: no upper clamp -- a float literal
-                                          # can random-walk upward without bound.
-                                          # Preserved deliberately; see the plan's
-                                          # "defects preserved" list.
-)
-
-CONFIG = sr.GrammarConfig.from_vocab(
-    VOCAB,
-    comparators=COMPARATORS,
-    transitions=TRANSITIONS,
-    max_depth=MAX_DEPTH,
-    p_and=0.6,             # And-vs-Or split when building a random condition
-    p_fire=0.6,            # Fire-vs-Postpone split when building a random action
-    p_mutate_fire=0.5,     # Fire-vs-Postpone split when mutating an action
-    p_mutation=P_MUTATION,
-)
+CONFIG = shared.make_config(VOCAB, TRANSITIONS)
 
 # ─── seed policies ────────────────────────────────────────────────────────────
 
@@ -361,152 +270,6 @@ SEED_C = Fire('process')
 SEED_POLICIES = [SEED_A, SEED_B, SEED_C]
 SEED_POLICY   = SEED_A
 
-# ─── model smoke test ─────────────────────────────────────────────────────────
-
-def smoke_test(seed: int = 3000, horizon: int = 30) -> None:
-    """Run the reference policy once and check the model behaves as designed.
-
-    Checks, in order:
-      * decision points exist at all (see the module note on why they might not)
-      * waiting_1 and waiting_2 both hold several tokens, so MAX ranges over
-        something and the priority sort has work to do
-      * waiting_2 really is a priority queue - the case `process` consumes is
-        the highest-priority one available
-      * the policy both fires and postpones
-    """
-    trace   = []
-    picks   = []   # (priority chosen, priorities available) per firing
-
-    def heuristic(pn, actions_dict):
-        action = REFERENCE_POLICY.evaluate(pn)
-        w1 = [t.value["priority"] for p in pn.places if p._id == 'waiting_1'
-              for t in p.marking]
-        w2 = [t.value["priority"] for p in pn.places if p._id == 'waiting_2'
-              for t in p.marking if t.time <= pn.clock]
-        trace.append((pn.clock, list(w1), list(w2),
-                      Max('waiting_1', 'priority').evaluate(pn),
-                      Max('waiting_2', 'priority').evaluate(pn),
-                      action))
-        if action == 'postpone':
-            return 'postpone'
-        if action in actions_dict and actions_dict[action]:
-            entries = actions_dict[action]
-            chosen  = _select_binding(entries)
-            # Compare what was taken against everything that was on offer.
-            taken     = _entry_priority(chosen)
-            offered   = [p for p in (_entry_priority(e) for e in entries)
-                         if p is not None]
-            naive     = _entry_priority(entries[0])   # what entries[0] would give
-            if taken is not None and offered:
-                picks.append((taken, sorted(offered, reverse=True), naive))
-            return {action: chosen}
-        return 'postpone'
-
-    pn = make_priority_system(seed=seed)
-    with contextlib.redirect_stdout(io.StringIO()):
-        pn.testing_run(solver=HeuristicSolver(heuristic_function=heuristic),
-                       length=horizon)
-
-    print("=" * 88)
-    print(f"Reference policy trace  (lead={LEAD_TIME}, horizon={horizon})")
-    print("=" * 88)
-    print(f"{'clock':>7}  {'waiting_1 (pending)':<26} {'waiting_2 (ready)':<22} "
-          f"{'maxW1':>6} {'maxW2':>6}  decision")
-    print("-" * 88)
-    def _fmt(queue, width):
-        s = ",".join(str(p) for p in queue)
-        return s if len(s) <= width else s[:width - 3] + "..."
-
-    for clock, w1, w2, m1, m2, action in trace[:24]:
-        m1s = '-inf' if m1 == -float('inf') else f"{m1:g}"
-        m2s = '-inf' if m2 == -float('inf') else f"{m2:g}"
-        print(f"{clock:>7.2f}  {_fmt(w1, 26):<26} {_fmt(w2, 22):<22} "
-              f"{m1s:>6} {m2s:>6}  {action}")
-    if len(trace) > 24:
-        print(f"  ... {len(trace) - 24} more decisions")
-    print("-" * 88)
-
-    fired     = sum(1 for t in trace if t[5] != 'postpone')
-    postponed = sum(1 for t in trace if t[5] == 'postpone')
-    print(f"decision points: {len(trace)}   fired: {fired}   postponed: {postponed}")
-
-    # ── model sanity checks ──────────────────────────────────────────────────
-    print()
-    print("Model checks:")
-    ok = True
-
-    if len(trace) == 0:
-        print("  [FAIL] no decision points - policy never consulted")
-        ok = False
-    else:
-        print(f"  [ OK ] {len(trace)} decision points")
-
-    if fired == 0 or postponed == 0:
-        print(f"  [FAIL] policy is one-sided (fired={fired}, postponed={postponed})")
-        ok = False
-    else:
-        print(f"  [ OK ] policy both fires and postpones")
-
-    max_w1 = max((len(t[1]) for t in trace), default=0)
-    max_w2 = max((len(t[2]) for t in trace), default=0)
-    if max_w1 < 2 or max_w2 < 2:
-        print(f"  [FAIL] queues too shallow for MAX/sorting to matter "
-              f"(max |waiting_1|={max_w1}, max |waiting_2|={max_w2})")
-        ok = False
-    else:
-        print(f"  [ OK ] queues deep enough (max |waiting_1|={max_w1}, "
-              f"max |waiting_2|={max_w2})")
-
-    bad_picks = [(p, avail) for p, avail, _ in picks if avail and p != avail[0]]
-    if not picks:
-        print("  [WARN] no firings recorded, priority ordering unverified")
-        ok = False
-    elif bad_picks:
-        print(f"  [FAIL] priority discipline broken in {len(bad_picks)}/{len(picks)} "
-              f"firings, e.g. took {bad_picks[0][0]} from {bad_picks[0][1]}")
-        ok = False
-    else:
-        print(f"  [ OK ] all {len(picks)} firings took the highest available "
-              f"priority (waiting_2 discipline works)")
-
-    # How often gympn's time-ordered bindings[0] would have picked differently.
-    would_differ = [(t, n, av) for t, av, n in picks if n is not None and n != t]
-    if would_differ:
-        t, n, av = would_differ[0]
-        print(f"  [note] taking bindings[0] instead would have differed in "
-              f"{len(would_differ)}/{len(picks)} firings "
-              f"(e.g. {n} instead of {t}, offered {av}) - "
-              f"the marking sort alone does not control binding order")
-    else:
-        print("  [note] bindings[0] would have agreed on every firing here")
-
-    print(f"\n  => {'MODEL OK' if ok else 'MODEL NEEDS ATTENTION'}")
-
-    # ── ALL vs ENABLED degeneracy demonstration ──────────────────────────────
-    enabled_ref = IfThenElse(
-        condition=Compare('<=',
-                          Max('waiting_1', 'priority', ENABLED),
-                          Max('waiting_2', 'priority', ENABLED)),
-        then=Fire('process'),
-        else_=Postpone(),
-    )
-    counts_all = conformance_counts(REFERENCE_POLICY)
-    counts_en  = conformance_counts(enabled_ref)
-    print()
-    print("ALL vs ENABLED on waiting_1 (why the reference uses ALL):")
-    print(f"  ALL     : {counts_all}")
-    print(f"  ENABLED : {counts_en}  <- degenerate, waiting_1 is empty of "
-          f"enabled tokens at every decision")
-
-    # ── seed / baseline fitness ──────────────────────────────────────────────
-    print()
-    print("Seed / reference fitness:")
-    sr.seed_baseline_table(
-        (('reference', REFERENCE_POLICY), ('SEED_A', SEED_A),
-         ('SEED_B', SEED_B), ('SEED_C', SEED_C), ('postpone', Postpone())),
-        conformance_counts, evaluate,
-    )
-
 # ─── experiment record ──────────────────────────────────────
 
 EXPERIMENT = sr.Experiment(
@@ -525,6 +288,7 @@ EXPERIMENT = sr.Experiment(
     elite_k=ELITE_K,
     reference_policy=REFERENCE_POLICY,
     conformance_counts=conformance_counts,
+    scale_config=SCALE_CONFIG,
 )
 
 
@@ -533,7 +297,4 @@ def run_ga(seed: int = 42):
 
 
 if __name__ == "__main__":
-    if "--check" in sys.argv:
-        smoke_test()
-    else:
-        run_ga(seed=42)
+    run_ga(seed=42)

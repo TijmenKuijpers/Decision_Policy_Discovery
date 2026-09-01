@@ -3,7 +3,7 @@ policy_grammar.py
 -----------------
 Python AST node classes for rule-based decision policies in Petri nets,
 implementing the policy grammar G_pi (Algorithm 1 of the accompanying paper,
-"Policy Discovery in Process Models with Symbolic Regression").
+"Decision Policy Discovery in Process Models with Symbolic Regression").
 
 Grammar recap (G_pi)
 --------------------
@@ -21,14 +21,6 @@ Grammar recap (G_pi)
 <number>      ::= c, c in R
 <action>      ::= FIRE(t) | POSTPONE,  t in T_A
 
-Extensions beyond the published G_pi
-------------------------------------
-CLOCK is an addition, not part of Algorithm 1 in the paper.  The published
-feature set is entirely token aggregates, so the simulation time tau enters a
-policy only through the ENABLED selector and can never be used as a quantity.
-That makes rate-based policies — executions per time unit, throughput targets,
-deadline slack — inexpressible.  Any policy using CLOCK is outside the
-language as published; see the Clock class for detail.
 
 The classes below are the *AST* form of this grammar, not its parse tree: the
 precedence-only non-terminals <conjunction>, <literal>, <term> and <factor>
@@ -87,7 +79,16 @@ def _selected_tokens(state: State, place: str, selector: str) -> list:
 
     A place that does not exist in the net yields the empty selection rather
     than raising, so a policy naming an unknown place stays evaluable.
+
+    A state may offer a `selected(place, selector)` method, in which case it is
+    trusted to answer this itself.  A frozen replay state knows its selections
+    can never change and precomputes them once, which turns the scan below --
+    run for every <feature> node of every candidate at every decision point --
+    into a dict lookup.  Live nets have no such method and take the scan.
     """
+    precomputed = getattr(state, 'selected', None)
+    if precomputed is not None:
+        return precomputed(place, selector)
     for p in state.places:
         if p._id == place:
             if selector == ENABLED:
@@ -104,7 +105,6 @@ class _FeatureNode:
             raise ValueError(
                 f"Invalid selector '{self.selector}'. Must be one of {SELECTORS}"
             )
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Expressions  (<expr>, <term>, <factor>, <feature>)
@@ -220,15 +220,6 @@ class Clock:
 
     The current simulation time tau of state <M, tau>.
 
-    Every other <feature> is an aggregate over tokens, so tau is reachable only
-    indirectly, through the ENABLED selector's tau comparison.  That is enough
-    to ask "is this token available yet" but not to use elapsed time as a
-    quantity, which rules out any rate policy — executions per time unit,
-    throughput targets, deadline slack.  CLOCK closes that gap.
-
-    Takes no place, attribute or selector: tau is a property of the state as a
-    whole, not of any one place's marking.
-
     Example:
         Div(Sum('machine', 'nr_exec'), Clock()).evaluate(pn)
             -> executions per time unit so far
@@ -336,7 +327,6 @@ class Div:
 Condition = Union["Compare", "And", "Or", "Not"]
 
 COMPARATORS = {'>', '>=', '<', '<=', '=', '!='}
-
 
 @dataclass
 class Compare:
@@ -464,7 +454,6 @@ class Postpone:
 # Action is anything that evaluates to an action string
 ActionNode = Union[Fire, Postpone]
 
-
 @dataclass
 class IfThenElse:
     """<policy> ::= IF <condition> THEN <action> ELSE <policy>
@@ -496,7 +485,6 @@ class IfThenElse:
 # ─────────────────────────────────────────────────────────────────────────────
 # GymPN adapter
 # ─────────────────────────────────────────────────────────────────────────────
-
 def make_heuristic(policy_tree: Union[IfThenElse, ActionNode]):
     """Wrap a grammar policy tree in the gympn HeuristicSolver interface.
 

@@ -26,16 +26,12 @@ Seed policies (three complementary imperfect starts)
 Crossover between A and B can assemble the full reference policy without
 seeding it directly.  ELITE_K=3 preserves all three seeds past generation 0.
 
-Expected runtime: ~10–20 minutes for the default 80 × 100 configuration.
+The shared search budget is POP_SIZE x N_GENERATIONS = 60 x 300 (ga_shared.py).
 """
-
-import copy
-import sys
-import random
 
 import numpy as np
 
-sys.path.append("C:/Users/20183272/OneDrive - TU Eindhoven/Documents/GitHub/gympn")
+import gympn_path  # noqa: F401  -- makes gympn importable; see its docstring
 
 from simpn.simulator import SimToken
 from gympn.simulator import GymProblem
@@ -45,8 +41,8 @@ from policy_grammar import (
     Count, Sum, Div, Number,
     Fire,
 )
-from ga_fitness import DIVERGENCE_COSMETIC
 import symbolic_regression as sr
+import ga_shared as shared
 
 # ─── scenario parameters (mirror choice_gym_SL.py) ───────────────────────────
 
@@ -69,37 +65,43 @@ PLACES = [
 ]
 DELIVERED_PLACES = ['phone_delivered', 'game_delivered']
 TRANSITIONS      = ['game_production', 'phone_production']
-COMPARATORS      = ['>', '>=', '<', '<=', '=', '!=']
-
-# Number literals: integers 0-8 for token counts; floats for SLA thresholds.
-NUM_INT_POOL   = list(range(9))
-NUM_FLOAT_POOL = [0.5, 0.75, 0.90, 0.95, 0.99]
-NUM_POOL       = NUM_INT_POOL + NUM_FLOAT_POOL
+COMPARATORS = shared.COMPARATORS
 
 # ─── GA hyper-parameters ──────────────────────────────────────────────────────
 
-POP_SIZE      = 80
-N_GENERATIONS = 100
-TOURNAMENT_K  = 3
-P_CROSSOVER   = 0.70
-P_MUTATION    = 0.35
-MAX_DEPTH     = 3
-N_ROLLOUTS    = 5
-HORIZON       = 50
-ELITE_K       = 3   # number of best individuals carried forward unchanged
-
-COSMETIC_CONFIG = DIVERGENCE_COSMETIC
+POP_SIZE      = shared.POP_SIZE
+N_GENERATIONS = shared.N_GENERATIONS
+TOURNAMENT_K  = shared.TOURNAMENT_K
+P_CROSSOVER   = shared.P_CROSSOVER
+P_MUTATION    = shared.P_MUTATION
+MAX_DEPTH     = shared.MAX_DEPTH
+ELITE_K       = shared.ELITE_K
+N_ROLLOUTS    = 7
+HORIZON       = shared.HORIZON
+COSMETIC_CONFIG = shared.COSMETIC_CONFIG
+SCALE_CONFIG = shared.SCALE_CONFIG
 
 # ─── assembly-system factory ──────────────────────────────────────────────────
 
-def make_sl_assembly_system() -> GymProblem:
+def make_sl_assembly_system(seed: int = 42) -> GymProblem:
     """Return a fully initialised SL assembly-system GymProblem.
 
-    Behavior functions are defined as inner closures that capture *pn*
-    so that pn.clock is always the clock of the correct instance.
+    Behavior functions are defined as inner closures that capture *pn*, so
+    pn.clock is always the clock of the correct instance.  That is exactly why
+    the net has to be rebuilt per rollout rather than deep-copied from a
+    prototype: `copy.deepcopy` does not copy function objects, so a copied net
+    kept its behaviours pointing at the *prototype's* clock, which never
+    advances.  With `on_time = pn.clock <= request_date` read off a clock frozen
+    at 0, every delivery came out on time, SLA(p) was pinned at 1.0, and both
+    SLA branches of pi_sla were dead code.  Rebuilding is cheap next to
+    simulating.
+
+    *seed* drives the arrival streams and the deadline draws, so different
+    rollouts see different workloads instead of replaying one identical trace.
     """
     pn = GymProblem(allow_postpone=True, causal_rl=False)
-    pn.rng = np.random.default_rng(42)
+    rng = np.random.default_rng(seed)
+    pn.rng = rng
 
     a_chip = pn.add_var("chip supply",         var_attributes=["chip_id"])
     a_pc   = pn.add_var("phone case supply",   var_attributes=["phone_case_id"])
@@ -123,22 +125,24 @@ def make_sl_assembly_system() -> GymProblem:
 
     def chip_arrival(tok):
         cid   = tok["chip_id"] + 1
-        delay = np.random.default_rng(42 + cid).exponential(scale=CHIP_ARRIVAL_SCALE)
+        delay = float(rng.exponential(scale=CHIP_ARRIVAL_SCALE))
         t     = {"chip_id": cid}
         return [SimToken(t, delay=delay), SimToken(t, delay=delay)]
 
     def pc_arrival(tok):
         pid   = tok["phone_case_id"] + 1
-        delay = np.random.default_rng(42 + pid).exponential(scale=PHONE_CASE_ARRIVAL_SCALE)
+        delay = float(rng.exponential(scale=PHONE_CASE_ARRIVAL_SCALE))
         t     = {"phone_case_id": pid}
         return [SimToken(t, delay=delay), SimToken(t, delay=delay)]
 
     def game_demand_arrive(demand):
-        new_d = {"request_date": pn.clock + random.randint(GAME_DEADLINE_LO, GAME_DEADLINE_HI)}
+        new_d = {"request_date": pn.clock
+                                 + int(rng.integers(GAME_DEADLINE_LO, GAME_DEADLINE_HI + 1))}
         return [SimToken(demand, delay=GAME_DEMAND_INTERVAL), SimToken(new_d, delay=0)]
 
     def phone_demand_arrive(demand):
-        new_d = {"request_date": pn.clock + random.randint(PHONE_DEADLINE_LO, PHONE_DEADLINE_HI)}
+        new_d = {"request_date": pn.clock
+                                 + int(rng.integers(PHONE_DEADLINE_LO, PHONE_DEADLINE_HI + 1))}
         return [SimToken(demand, delay=PHONE_DEMAND_INTERVAL), SimToken(new_d, delay=0)]
 
     def game_production_behavior(stock_chip, game_resource, game_demand):
@@ -179,9 +183,6 @@ def make_sl_assembly_system() -> GymProblem:
     return pn
 
 
-# Build once; deepcopy per fitness evaluation keeps simulation state isolated.
-_BASE_PN: GymProblem = make_sl_assembly_system()
-
 # ─── reference policy (π_sla) ─────────────────────────────────────────────────
 
 def _sla_below(delivered_place: str, threshold: float) -> And:
@@ -211,82 +212,44 @@ REFERENCE_POLICY = IfThenElse(
 
 # ─── fitness ──────────────────────────────────────────────────────────────────
 
-def conformance_counts(tree, reference=None) -> tuple[int, int] | None:
-    """Divergences and decision points vs REFERENCE_POLICY.
+# Scoring is target-driven: the reference is simulated once, its decision
+# points are recorded, and candidates are scored by replaying them.
+_TRACES = sr.TraceCache(
+    make_system=lambda s: make_sl_assembly_system(seed=s),
+    seed_base=4000,
+)
 
-    Unlike the other drivers this one deep-copies a prototype net per rollout
-    rather than rebuilding it, so the `make_system` callback ignores the seed.
+
+def conformance_counts(tree, reference=None) -> tuple[int, int] | None:
+    """Divergences and decision points vs *reference* (default REFERENCE_POLICY).
+
+    The decision points are *reference*'s: recorded once from a simulation it
+    drives, then replayed for every candidate.  N_ROLLOUTS / HORIZON are read
+    here rather than baked into `_TRACES` so `evaluation.py` can override them.
     """
-    return sr.conformance_counts(
+    return _TRACES.counts(
         tree, reference if reference is not None else REFERENCE_POLICY,
-        make_system=lambda _s: copy.deepcopy(_BASE_PN),
         n_rollouts=N_ROLLOUTS, horizon=HORIZON,
     )
 
 
 def evaluate_primary(tree) -> float | None:
-    """Negative MEAN ABSOLUTE divergence per rollout -- not a rate.
+    """Negative divergence rate -- conformance as defined in the paper.
 
-    This experiment predates the switch to a rate-based primary and its
-    COSMETIC_CONFIG (the unscaled DIVERGENCE_COSMETIC, capped at 3.0) is tuned
-    against a primary measured in tens.  Swapping in sr.primary_rate here would
-    put the primary in [-1, 0] and let the cosmetic term dominate conformance
-    outright, so the two must be changed together or not at all.
+    Rate rather than absolute count, matching the other three drivers.  With
+    target-driven scoring the denominator is the fixed trace length, so this is
+    a rescaling; COSMETIC_CONFIG above is tuned against that [-1, 0] range.
     """
-    return sr.primary_count(conformance_counts(tree), N_ROLLOUTS)
+    return sr.primary_rate(conformance_counts(tree))
 
 
 evaluate = sr.make_evaluator(evaluate_primary, COSMETIC_CONFIG)
 
 # ─── random tree constructors ─────────────────────────────────────────────────
 
-VOCAB = sr.ExprVocab(
-    places=PLACES,
+VOCAB = shared.make_vocab(PLACES, [(p, 'on_time') for p in DELIVERED_PLACES])
 
-    # This net's only attribute-bearing feature is the boolean `on_time` flag on
-    # the two delivered places, and SUM is the only aggregate that says anything
-    # useful about it: MIN is 1 iff every delivery was on time, MAX is 1 iff any
-    # was, and MEAN duplicates the ratio branch below.  Declaring aggregates
-    # narrowly is a vocabulary fact, not a compatibility shim.
-    attr_features=[(p, 'on_time') for p in DELIVERED_PLACES],
-    aggregates=(Sum,),
-
-    # SLA ratio: SUM(delivered, on_time) / COUNT(delivered) -- the same place on
-    # both sides, which is what makes it a share rather than a rate.
-    ratio=sr.RatioSpec(sr.COUNT_SAME_PLACE,
-                       places=DELIVERED_PLACES, attribute='on_time'),
-
-    # No future-dated tokens here, so ALL and ENABLED coincide.
-    use_selectors=False,
-
-    int_pool=NUM_INT_POOL,
-    float_pool=NUM_FLOAT_POOL,
-    # The old flat NUM_POOL drew from ints and floats together, giving
-    # P(float) = 5/14; kept explicitly so stratifying does not shift it.
-    p_float=5 / 14,
-
-    w_count=0.50,                         # simple token count
-    w_number=0.15,                        # literal (int 0-8 or SLA threshold)
-    w_aggregate=0.15,                     # on-time delivery count
-    w_ratio=0.20,                         # SLA ratio (needed for conformance)
-
-    p_count_place=1.0,                    # no selector to swap, so always the place
-    p_ratio_keep=0.5,
-
-    int_lo=0, int_hi=8,
-    float_lo=0.0, float_hi=1.0,           # an SLA is a fraction
-)
-
-CONFIG = sr.GrammarConfig.from_vocab(
-    VOCAB,
-    comparators=COMPARATORS,
-    transitions=TRANSITIONS,
-    max_depth=MAX_DEPTH,
-    p_and=0.7,             # And-vs-Or split when building a random condition
-    p_fire=0.6,            # Fire-vs-Postpone split when building a random action
-    p_mutate_fire=0.5,     # Fire-vs-Postpone split when mutating an action
-    p_mutation=P_MUTATION,
-)
+CONFIG = shared.make_config(VOCAB, TRANSITIONS)
 
 # ─── seed policy ──────────────────────────────────────────────────────────────
 
@@ -347,6 +310,7 @@ EXPERIMENT = sr.Experiment(
     elite_k=ELITE_K,
     reference_policy=REFERENCE_POLICY,
     conformance_counts=conformance_counts,
+    scale_config=SCALE_CONFIG,
 )
 
 
