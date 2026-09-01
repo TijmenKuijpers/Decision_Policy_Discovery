@@ -5,15 +5,13 @@ Code and data for the paper
 > Tijmen Kuijpers, Karolin Winter and Remco Dijkman.
 > *Decision Policy Discovery in Process Models with Symbolic Regression.*
 
-**DPDGen** discovers *decision policies* — rules that decide which activity a
-process executes next based on the state of **every** running instance, not
-just the one at hand — from state-enriched event logs. A decision policy is
-expressed in a context-free grammar over Petri-net token aggregates,
+**DPDGen** discovers *decision policies*, rules that decide which activity a
+process executes next based on the state of **every** running instance from state-enriched event logs. 
+A decision policy is expressed in a context-free grammar over Petri-net token aggregates,
 represented as an abstract syntax tree, and searched with a genetic algorithm.
 
 This repository holds the four evaluation processes, the state-action datasets
 they produce, the grammar, the search, and the results of the reported run.
-
 ---
 
 ## Quick start
@@ -78,9 +76,6 @@ drift apart. Run one on its own with `python ga_priority_conf.py`.
 with the action it takes there, as the full Petri-net marking. Regenerate with
 `python export_datasets.py`.
 
-Decision counts, matching Section 6.2: 491 (`pi_batch`), 484 (`pi_sla`),
-486 (`pi_rate`), 489 (`pi_prio`).
-
 ## Running the evaluation
 
 | File | What it does |
@@ -94,22 +89,6 @@ Decision counts, matching Section 6.2: 491 (`pi_batch`), 484 (`pi_sla`),
 decisions, the discovered policy, and the per-generation curve of every run),
 `curves.csv`, `evaluation.xlsx`, and the figures.
 
-### Reading the fitness sign
-
-Internally the primary fitness is the **negated** divergence rate `-div/dec`,
-so a policy that never disagrees with the target scores `0` and every fitness
-is `<= 0`. The paper states conformance as `1 - div/dec` (Eq. 4), which puts a
-perfect policy at `1`. The two differ by exactly 1: a run reported at `0.992`
-in the paper appears as `-0.008` in `results.json`.
-
-### Which replications the paper's Table 4 reports
-
-Its fitness, conformance and penalty columns are the best over the first five
-GA seeds — `(42, 7, 13, 101, 2024)`, the order `run_n20.py` runs them in —
-while its remine-consistency column counts all twenty. Taking the best over
-all twenty instead raises two cells (Cat I with pre-knowledge 0.990 → 0.992,
-Cat II-b with pre-knowledge 0.777 → 0.805) and leaves the other six unchanged.
-
 ## Tests
 
 ```bash
@@ -119,28 +98,6 @@ python -m pytest tests -q
 - [`tests/test_ga_fitness.py`](tests/test_ga_fitness.py) — the interpretability penalty terms.
 - [`tests/test_mutation.py`](tests/test_mutation.py) — the mutation operator and its five edit types.
 - [`tests/test_datasets.py`](tests/test_datasets.py) — the published datasets reproduce the recorded actions under the normative policies, and the decision counts match the paper.
-
-## Notes on the implementation
-
-**`CLOCK` extends the published grammar.** Every `<feature>` terminal in
-Listing 1 is a token aggregate, so elapsed time enters a policy only through
-the `ENABLED` selector and can never be used as a quantity — which makes rate
-policies inexpressible. `pi_rate` (Cat II-b) needs one, so `policy_grammar.py`
-adds `CLOCK`. Any policy using it is outside the language exactly as
-published; see the `Clock` class for the detail.
-
-**Scoring is target-driven.** The normative policy is simulated once and every
-decision point it reaches is recorded; candidates are replayed against that
-fixed list and never drive the simulation themselves. So every candidate in a
-run faces the same decision points and the same denominator — neither of which
-it can influence.
-
-**Reproducibility.** The GA is fully seeded (`random.Random(seed)` plus
-`np.random.seed(seed)` in `run_ga`, and each rollout's own
-`np.random.default_rng(seed)` in the driver's `make_system`), so re-running
-reproduces the committed results exactly rather than approximately. Note that
-`run_n20.py` writes into `evaluation_results_n20/`, overwriting what is
-committed there — `git diff` after a re-run is the reproduction check.
 
 ## Citation
 
